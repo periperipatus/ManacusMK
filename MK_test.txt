@@ -1,0 +1,212 @@
+### MK Test Pipeline ###
+
+#Heavily modified from: https://github.com/thomasblankers/popgen/blob/master/MKTtest
+
+#SnpEff path
+SNPEFF=/media/balalab/BigArseRAID/CompPopGen_sjsw/snpEff
+
+
+#### 1. SET UP THE VCF
+### 1.1. Pre-filter the VCF file to only include candei and Pipra
+
+vcftools --gzvcf manakin_pipra_SNP_fil1_DP5GQ13_PassOnly_min22.recode.vcf.gz --keep individuals.txt --recode-INFO-all --recode --out mc_pipra
+
+### 1.2 Based on an early run through run through of this pipeline I found that having multi-allelic sites screws with the import of the VCF into R
+vcftools --vcf mc_pipra.vcf --min-alleles 2 --max-alleles 2 --recode-INFO-all --recode --out mc_pipra_biallelic
+
+
+### 1.3 And to ensure we're not getting annotations from other ncRNAs and such interfering with the first annotation set in let's exclude non-CDS sites from the VCF.
+# subsetting the gff to only include CDS. 
+awk '($3=="CDS") {OFS="\t"; print $1,$4-1,$5}' genome/GCF_001715985.3_ASM171598v3_genomic.gff > manacus_gff_CDS.bed
+#subsetting the gtf to only include CDS
+awk '($3=="CDS") {OFS="\t"; print $1,$4-1,$5}' genome/GCF_001715985.3_ASM171598v3_genomic.gtf > manacus_gtf_CDS.bed
+
+# subset the vcf to only include this CDS.
+#nohup vcftools --vcf mc_pipra_biallelic.recode.vcf --bed manacus_gtf_CDS.bed --recode --out mc_pipra_biallelic_CDS & #this file has  437064 sites 
+
+
+#### 2. Annotate the VCF
+### 2.1 extract the coding sites only for making a database (again this is to exclude the interference from other genomic annotations in the RefSeq)
+
+awk '($3=="CDS")' genome/GCF_001715985.3_ASM171598v3_genomic.gtf > $SNPEFF/data/Mv_protein_gtf/genes.gtf
+
+### 2.2 Make the database (noting that the config file has been modified according to the snpEff Documentation
+
+java -Xmx8g -jar $SNPEFF/snpEff.jar build -gtf22 -v Mv_protein_gtf
+### 2.3 Annotate the VCF.
+nohup java -Xmx8g -jar $SNPEFF/snpEff.jar Mv_protein_gtf mc_pipra_biallelic_CDS.recode.vcf > mc_pipra_biallelic_CDS.annotated.vcf &
+
+
+#### 3. Calculate Allele Frequencies for Populations
+grep "Mc_" individuals.txt > individuals_mc.txt 
+nohup vcftools --vcf mc_pipra_biallelic_CDS.recode.vcf  --keep individuals_mc.txt --freq --out freq_mc &
+nohup vcftools --vcf mc_pipra_biallelic_CDS.recode.vcf --indv SRR6885520 --freq --out freq_pipra &
+
+
+
+#### 4. Compile the MK Test in R ####
+#I like to do the R section in chunks, because some of the processes are slow and it allows more opportunities for fixing a problem down the line. 
+# I save the progress as .RData files external to R.
+# REMEMBER:  When doing this in parts make sure you LOAD the right .RData file into your R session with load("filename.RData")
+### 4.1
+library(tidyr)
+#load the annotated VCF file
+vcf_path="mc_pipra_biallelic_CDS.annotated.vcf"
+vcf_file<-readLines(vcf_path)
+vcf_SNPs<-data.frame(vcf_file[grep(pattern="#CHROM",vcf_file):length(vcf_file)])
+vcf_SNPs <- data.frame(do.call('rbind', strsplit(as.character(vcf_SNPs[,1]),'\t',fixed=TRUE)))
+colnames(vcf_SNPs) <- as.character(unlist(vcf_SNPs[1,]))
+vcf_SNPs<-vcf_SNPs[-1,]
+colnames(vcf_SNPs)[1]="contig"
+
+save(vcf_SNPs, file="R_SNPs.RData")
+#load("R_SNPs.RData")
+
+# read in allele frequencies (the output from vcftools is a bit unpractical, so we split the columns)
+mc_freq_path="freq_mc.frq"
+#mc_freq<-read.delim(mc_freq_path, header=FALSE, skip=1)
+mc_freq<- read.table(mc_freq_path,skip=1, fill=TRUE, header = F,col.names=c("contig","pos","n_alleles","n_chromosomes","ref","alt"))
+#colnames(mc_freq)<-c("contig","pos","n_alleles","n_chromosomes","ref","alt","2nd_alt")
+mc_freq<-separate(mc_freq,ref,c("ref_allele","ref_freq"), ":")
+mc_freq<-separate(mc_freq,alt,c("alt_allele","alt_freq"), ":")
+mc_freq$ref_freq<-as.numeric(mc_freq$ref_freq)
+mc_freq$alt_freq<-as.numeric(mc_freq$alt_freq)
+
+pipra_freq_path="freq_pipra.frq"
+#pipra_freq<-read.delim(pipra_freq_path, header=FALSE, skip=1)
+pipra_freq<- read.table(pipra_freq_path,skip=1, fill=TRUE, header = F,col.names=c("contig","pos","n_alleles","n_chromosomes","ref","alt"))
+#colnames(pipra_freq)<-c("contig","pos","n_alleles","n_chromosomes","ref","alt")
+pipra_freq<-separate(pipra_freq,ref,c("ref_allele","ref_freq"), ":") # separate columns into new columns based on delimiter ":"
+pipra_freq<-separate(pipra_freq,alt,c("alt_allele","alt_freq"), ":")
+pipra_freq$ref_freq<-as.numeric(pipra_freq$ref_freq)
+pipra_freq$alt_freq<-as.numeric(pipra_freq$alt_freq)
+
+
+# attach allele frequencies to SNP file
+vcf_SNPs$mc_ref_freq<-mc_freq$ref_freq
+vcf_SNPs$mc_alt_freq<-mc_freq$alt_freq
+
+vcf_SNPs$pipra_ref_freq<-pipra_freq$ref_freq
+vcf_SNPs$pipra_alt_freq<-pipra_freq$alt_freq
+
+save(vcf_SNPs, file="R_SNPs.RData")
+
+# only keep SNPs that are either synonymous or nonsynonymous.
+#start with 437064 sites
+vcf_SNPs_filtered<-vcf_SNPs[grep(pattern="synonymous_variant|missense_variant",vcf_SNPs$INFO),]
+#end with 435043 sites
+#filter sites in manacus that are present in at an allele frequency of =<0.05. This will ensure that slightly deleterious mutations segregating are not obscuring positive selection signals.
+#I chose this frequency because it is more stringent than removing singletons for the full dataset of 22 diploid individuals, but more permissive given the small sample size of removing MAF<0.15
+#vcf_SNPs_filtered<- vcf_SNPs_filtered[vcf_SNPs_filtered$mc_alt_freq>0.025,]
+#vcf_SNPs_filtered<- vcf_SNPs_filtered[vcf_SNPs_filtered$mc_ref_freq>0.025,]
+
+# extract out the annotation information (i.e. synonymous vs missense)
+vcf_SNPs_filtered$annotation<-separate(vcf_SNPs_filtered,INFO,c("A","B","C","D","E","F","G","H","J","K","L","Z","X","N","V","Q","W","R"), "\\|")[,"B"] # random number of columns with random column names, needs to be more than the maximum amount of columns possible, you only need the second column
+#extract the Gene Symbol
+vcf_SNPs_filtered$gene_name<-separate(vcf_SNPs_filtered,INFO,LETTERS[1:20], "\\|")[,"E"]
+#extract the Entrez Gene_ID
+vcf_SNPs_filtered$Entrez_id<-separate(vcf_SNPs_filtered,INFO,LETTERS[1:20], "\\|")[,"D"]
+vcf_SNPs_filtered$Entrez_id<- gsub("GeneID:","", vcf_SNPs_filtered$Entrez_id)
+vcf_SNPs_filtered$contig<-factor(vcf_SNPs_filtered$contig) # reset factor levels
+vcf_SNPs_filtered<- vcf_SNPs_filtered[!is.na(vcf_SNPs_filtered$pipra_ref_freq),] #exclude sites where the Pipra ref freq is NA.
+vcf_SNPs_filtered<- vcf_SNPs_filtered[!is.na(vcf_SNPs_filtered$mc_ref_freq),] 
+#now is 434449 sites
+
+
+
+save(vcf_SNPs_filtered, file="R_SNPs_filtered.RData")
+
+## count pN, pS, dN, dS
+
+# create columns with 0s
+vcf_SNPs_filtered$pN<-0
+vcf_SNPs_filtered$pS<-0
+vcf_SNPs_filtered$dN<-0
+vcf_SNPs_filtered$dS<-0
+vcf_SNPs_filtered$pN_mc<-0
+vcf_SNPs_filtered$pS_mc<-0
+vcf_SNPs_filtered$pN_pipra<-0
+vcf_SNPs_filtered$pS_pipra<-0
+
+
+
+# check the category a SNP falls into
+for(i in 1:nrow(vcf_SNPs_filtered)) {
+	print(paste0("processing row", i))
+	if((vcf_SNPs_filtered$mc_ref_freq[i]==0 && vcf_SNPs_filtered$pipra_alt_freq[i]==0) || (vcf_SNPs_filtered$pipra_ref_freq[i]==0 && vcf_SNPs_filtered$mc_alt_freq[i]==0) && "synonymous_variant" %in% vcf_SNPs_filtered$annotation[i]) { vcf_SNPs_filtered$dS[i]<-1 } 
+	if((vcf_SNPs_filtered$mc_ref_freq[i]==0 && vcf_SNPs_filtered$pipra_alt_freq[i]==0) || (vcf_SNPs_filtered$pipra_ref_freq[i]==0 && vcf_SNPs_filtered$mc_alt_freq[i]==0) && "missense_variant" %in% vcf_SNPs_filtered$annotation[i]) { vcf_SNPs_filtered$dN[i]<-1 }
+	if((vcf_SNPs_filtered$mc_ref_freq[i]!=0 && vcf_SNPs_filtered$mc_alt_freq[i]!=0) && (vcf_SNPs_filtered$pipra_ref_freq[i]!=0 && vcf_SNPs_filtered$pipra_alt_freq[i]!=0) && "synonymous_variant" %in% vcf_SNPs_filtered$annotation[i]) { vcf_SNPs_filtered$pS[i]<-1 }
+	if((vcf_SNPs_filtered$mc_ref_freq[i]!=0 && vcf_SNPs_filtered$mc_alt_freq[i]!=0) && (vcf_SNPs_filtered$pipra_ref_freq[i]!=0 && vcf_SNPs_filtered$pipra_alt_freq[i]!=0) && "missense_variant" %in% vcf_SNPs_filtered$annotation[i]) { vcf_SNPs_filtered$pN[i]<-1 }
+	if((vcf_SNPs_filtered$mc_ref_freq[i]!=0 && vcf_SNPs_filtered$mc_alt_freq[i]!=0) && (vcf_SNPs_filtered$pipra_ref_freq[i]==0 || vcf_SNPs_filtered$pipra_alt_freq[i]==0) && "synonymous_variant" %in% vcf_SNPs_filtered$annotation[i]) { vcf_SNPs_filtered$pS_mc[i]<-1 }
+	if((vcf_SNPs_filtered$mc_ref_freq[i]!=0 && vcf_SNPs_filtered$mc_alt_freq[i]!=0) && (vcf_SNPs_filtered$pipra_ref_freq[i]==0 || vcf_SNPs_filtered$pipra_alt_freq[i]==0) && "missense_variant" %in% vcf_SNPs_filtered$annotation[i]) { vcf_SNPs_filtered$pN_mc[i]<-1 }
+	if((vcf_SNPs_filtered$pipra_ref_freq[i]!=0 && vcf_SNPs_filtered$pipra_alt_freq[i]!=0) && (vcf_SNPs_filtered$mc_ref_freq[i]==0 || vcf_SNPs_filtered$mc_alt_freq[i]==0) && "synonymous_variant" %in% vcf_SNPs_filtered$annotation[i]) { vcf_SNPs_filtered$pS_pipra[i]<-1 }
+	if((vcf_SNPs_filtered$pipra_ref_freq[i]!=0 && vcf_SNPs_filtered$pipra_alt_freq[i]!=0) && (vcf_SNPs_filtered$mc_ref_freq[i]==0 || vcf_SNPs_filtered$mc_alt_freq[i]==0) && "missense_variant" %in% vcf_SNPs_filtered$annotation[i]) { vcf_SNPs_filtered$pN_pipra[i]<-1 }
+	}
+
+save(vcf_SNPs_filtered, file="R_SNPs_filtered.RData")
+
+
+
+
+#sum pNs, pSs, dNs, and dSs for each gene across SNPs
+#vcf_SNPs_filtered<- vcf_SNPs_filtered[!is.na(vcf_SNPs_filtered$gene_name),]
+vcf_SNPs_filtered$gene_name<- factor(vcf_SNPs_filtered$gene_name)
+
+genes<- unique(vcf_SNPs_filtered$Entrez_id)
+
+# make empty data.frame
+MKT<-data.frame(contig=factor(),gene_name=factor(), Entrez_id=factor(),pN_mc=numeric(),pS_mc=numeric(),pN_pipra=numeric(),pS_pipra=numeric(), pN_all=numeric(), pS_all=numeric(),dN_orig=numeric(),dS_orig=numeric(),  pN=numeric(), pS=numeric(), dN=numeric(), dS=numeric())
+genes_run<- vector()
+for( i in genes) {
+	genes_run[i]<- i
+	temp<-vcf_SNPs_filtered[which(vcf_SNPs_filtered$Entrez_id==i),]
+	MKT<-rbind(MKT,data.frame(
+	contig=as.character(temp$contig[1]),
+	gene_name=as.character(temp$gene_name[1]),
+	Entrez_id=as.character(temp$Entrez_id[1]),
+	pN_mc=sum(temp[,"pN_mc"]),
+	pS_mc=sum(temp[,"pS_mc"]),
+	pN_pipra=sum(temp[,"pN_pipra"]),
+	pS_pipra=sum(temp[,"pS_pipra"]),
+	pN_all=sum(temp[,"pN"]),
+	pS_all=sum(temp[,"pS"]),
+	dN_orig=sum(temp[,"dN"]),
+	dS_orig=sum(temp[,"dS"]),
+	pN=sum(temp[,c("pN","pN_mc", "pN_pipra")]),
+	pS=sum(temp[,c("pS","pS_mc", "pS_pipra")]),
+	dN=sum(temp[,c("dN")]),
+	dS=sum(temp[,c("dS")])))
+}
+
+# perform MKT test
+MKT$pN.pS=MKT$pN/MKT$pS # calculate ration of nonsynonymous to synonymous polymorphisms
+MKT$dN.dS=MKT$dN/MKT$dS # calculate ration of nonsynonymous to synonymous substitutions
+MKT$alpha=1-((MKT$dS*MKT$pN)/(MKT$dN*MKT$pS))
+MKT$NeutralityIndex<- (MKT$pN/MKT$dN)/(MKT$pS/MKT$dS)
+
+
+save(MKT, file="R_MKT_out.RData")
+
+rownames(MKT)<- 1:nrow(MKT)
+MKT$fisher.test.P<-99  # create new column for p-values
+
+for(i in 1:nrow(MKT)){
+	MKT$fisher.test.P[i]<-fisher.test(matrix(as.numeric(MKT[i,c("pS","pN","dS","dN")]), ncol=2))$p.value # calculate fisher exact test and copy p-value for every gene
+	if((MKT$pN[i] == 0 && MKT$dN[i] == 0) || (MKT$pS[i] == 0 && MKT$dS[i] == 0) || (MKT$pS[i] == 0 && MKT$pN[i] == 0) || (MKT$dS[i] == 0 && MKT$dN[i] == 0)) { MKT$fisher.test.P[i]<-NA} # this lines assigns an NA to all p-values that are meaningless, because the contingency table was incomplete
+	#if(sum(as.numeric(MKT[i,c(3,2,5,4)])) < 3) { MKT$fisher.test.P[i]<-NA } # only use cases where total number of SNPs is higher than or equal to 3
+	}
+
+#assign NA to observations with an alpha that is not numeric
+MKT$fisher.test.P<- ifelse(MKT$alpha=="NaN", NA, as.numeric(MKT$fisher.test.P))
+# multiple hypothesis testing. It seems to be uncommon with MKT; probably because fisher exact produces low P-values only with much higher counts than are common for SNP data
+#only include the comparisons that aren't NA. 
+n_comparisons<- length(MKT$fisher.test.P[!is.na(MKT$fisher.test.P)])
+MKT$fisher.test.Padj<-p.adjust(MKT$fisher.test.P, method = "BH", n=n_comparisons)
+#if I run this even with the reduced number of comparisons I get no significant results. This is probably too conservative. 
+
+
+save(MKT, file="R_MKT_out.RData")
+
+write.csv(MKT, file="MKT_V5_PfvMc.csv", row.names=FALSE)
+
+

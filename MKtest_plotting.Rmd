@@ -1,0 +1,427 @@
+---
+title: "Manacus MK Test"
+author: "Peri Bolton"
+date: "22/02/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries and data}
+library(ggplot2)
+library(VennDiagram)
+library(gridExtra)
+library(ggpubr)
+library(ggrepel)
+library(wesanderson)
+library(openxlsx)
+
+peri_theme <- theme(panel.background = element_rect(fill="white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title.x = element_text(size = 12), axis.text.x = element_text(size = 10, 
+        colour = "black"), axis.title.y = element_text(size = 12), 
+    axis.text.y = element_text(size = 10, colour = "black"), 
+    legend.text = element_text(size = 10), legend.title = element_text(size = 12), 
+    axis.line.y = element_line(colour = "black"), axis.line.x = element_line(colour = "black"),
+    plot.title = element_text(hjust = 0.5, size=12))  + theme(legend.key=element_blank())
+
+allcandei<- read.csv("mapping to PfilV1/mkt_v5_PfvMc_annot_go.csv") #read in the one merged with the Pfil annotations.
+p3candei<- read.csv("MKT_V5_PfvMcP3.csv")
+p4candei<- read.csv("MKT_V5_PfvMcP4.csv")
+
+
+
+### process neutrality index into -log10
+
+topgenes<- 1:20
+
+allcandei$sig<- ifelse(allcandei$fisher.test.P<0.05, "p<0.05", ifelse(allcandei$fisher.test.Padj<0.05, "padj<0.05", "NS"))
+allcandei$log10NI<- -log10(allcandei$NeutralityIndex)
+allcandei$log10NI<- ifelse(allcandei$log10NI==Inf | allcandei$log10NI==-Inf ,NA,as.numeric(allcandei$log10NI))
+allcandei<- allcandei[order(allcandei$fisher.test.P),]
+rownames(allcandei)<- 1:nrow(allcandei)
+
+allcandei$interesting_genes<- ifelse(rownames(allcandei) %in% topgenes, as.character(allcandei$gene_name), "")
+
+
+p3candei$sig<- ifelse(p3candei$fisher.test.P<0.05, "p<0.05", ifelse(p3candei$fisher.test.Padj<0.05, "padj<0.05", "NS"))
+p3candei$log10NI<- -log10(p3candei$NeutralityIndex)
+p3candei$log10NI<- ifelse(p3candei$log10NI==Inf | p3candei$log10NI==-Inf ,NA,as.numeric(p3candei$log10NI))
+p3candei<- p3candei[order(p3candei$fisher.test.P),]
+rownames(p3candei)<- 1:nrow(p3candei)
+
+p3candei$interesting_genes<- ifelse(rownames(p3candei) %in% topgenes, as.character(p3candei$gene_name), "")
+
+
+p4candei$sig<- ifelse(p4candei$fisher.test.P<0.05, "p<0.05", ifelse(p4candei$fisher.test.Padj<0.05, "padj<0.05", "NS"))
+p4candei$log10NI<- -log10(p4candei$NeutralityIndex)
+p4candei$log10NI<- ifelse(p4candei$log10NI==Inf | p4candei$log10NI==-Inf ,NA,as.numeric(p4candei$log10NI))
+p4candei<- p4candei[order(p4candei$fisher.test.P),]
+rownames(p4candei)<- 1:nrow(p4candei)
+
+p4candei$interesting_genes<- ifelse(rownames(p4candei) %in% topgenes, as.character(p4candei$gene_name), "")
+
+```
+
+This document will compare the results of MacDonald-Kreitman tests on *Manacus candei* using *Pipra filicauda* as an outgroup. There are three versions of the test. One that includes populations 2,3 and 4 of *M. candei* (Mc), with 22 individuals. Then, because these populations have different hybrid backgrounds, I ran population 3 (white-collarded Mc, n=10), and population 4 (yellow-collarded Mc, n=10) separately to assess the influence of increased polymorphism owing to hybridisation with *Manacus vitellinus*.
+
+Some core things about the methods.
+
+* synonymous / non-synonymous changes were inferred using snpEff, and counted per gene in an R pipeline.
+
+
+* All remaining polymorphic sites (e.g. sites that are polymorphic only in Mc, heterozygous in Pipra, or polymorphic in BOTH Pipra and Mc) are considered as part of the pN/pS part of the equations and the contingency table for conducting the Fisher's Exact Test. 
+
+* This version I used a slightly different annotation, usign the GTF v2.2 rather than the GFF from NCBI RefSeq. These annotations do not appear to be 100% identical, as one has more lines of CDS annotation than the other (using *awk '($3=="CDS")' genome/GCF_001715985.3_ASM171598v3_genomic.gtf | wc -l*), and produce a slightly different filtered VCF for the number of sites. I did not explore this further.
+
+* Based on assessment of the BAM file by HC, and viewing of the conversions into fasta files by Peri and translation in Translator X, the results for BCO1 appear to be reliable.
+
+
+# Overlapping genes. 
+
+```{r, fig.height=8, fig.width=8}
+colours<- wes_palette("Darjeeling1", 3, type="discrete")
+
+p_all<- allcandei$gene_name[which(allcandei$fisher.test.P<0.05)]
+
+##false discovery rate
+325/nrow(allcandei[which(!is.na(allcandei$fisher.test.P)),])
+
+p_p3<- p3candei$gene_name[which(allcandei$fisher.test.P<0.05)]
+p_p4<- p4candei$gene_name[which(p4candei$fisher.test.P<0.05)]
+
+all_p3<- p_all[p_all %in% p_p3]
+all_p4<- p_all[p_all %in% p_p4]
+p3_p4<- p_p3[p_p3 %in% p_p4]
+all3<- all_p3[all_p3 %in% p_p4]
+
+
+g<-draw.triple.venn(area1=length(p_all), area2=length(p_p3),
+               area3=length(p_p4), 
+               n12=length(all_p3), 
+               n13=length(all_p4), 
+               n23=length(p3_p4),
+               n123=length(all3), 
+               category =c("all candei", "population 3\n(white-collared)", "population 4 (yellow-collared)"),fill=colours,
+               cex=1.1, cat.cex=1.1,
+               fontfamily=rep("sans",7), 
+               cat.fontfamily = rep("sans",3),
+               ind=FALSE)
+
+grid.arrange(gTree(children=g), top=textGrob("Overlap between significantly selected genes",gp=gpar(fontsize=14)), newpage=TRUE)
+```
+
+This means that the majority of genes are shared (all candei vs population 3 `r (length(all_p3)/length(p_all))*100` of genes, population 3 vs population 4 `r (length(p3_p4)/length(p_p4))*100` and population 4 vs all `r (length(all_p4)/length(p_all))*100`)
+
+Now, let's repeat the above analysis just for genes with an excess of polymorphic sites (-log10(NI)<0)
+
+```{r, fig.height=8, fig.width=8}
+p_all<- allcandei$gene_name[which(allcandei$fisher.test.P<0.05 & allcandei$log10NI<0)]
+p_p3<- p3candei$gene_name[which(allcandei$fisher.test.P<0.05 & p3candei$log10NI<0)]
+p_p4<- p4candei$gene_name[which(p4candei$fisher.test.P<0.05 & p3candei$log10NI<0)]
+
+all_p3<- p_all[p_all %in% p_p3]
+all_p4<- p_all[p_all %in% p_p4]
+p3_p4<- p_p3[p_p3 %in% p_p4]
+all3<- all_p3[all_p3 %in% p_p4]
+
+
+g<-draw.triple.venn(area1=length(p_all), area2=length(p_p3),
+               area3=length(p_p4), 
+               n12=length(all_p3), 
+               n13=length(all_p4), 
+               n23=length(p3_p4),
+               n123=length(all3), 
+               category =c("all candei", "population 3\n(white-collared)", "population 4\n(yellow-collared)"),fill=colours,
+               cex=1.1, cat.cex=1.1,
+               fontfamily=rep("sans",7), 
+               cat.fontfamily = rep("sans",3),
+               ind=FALSE)
+
+grid.arrange(gTree(children=g), top=textGrob("Overlap between  genes with a significant excess in polymorphic sites",gp=gpar(fontsize=14)), newpage=TRUE)
+
+
+```
+
+
+
+```{r, fig.width=12, fig.height=6}
+
+allmc_p<-  ggplot(allcandei, aes(x=fisher.test.P)) + geom_histogram() + peri_theme
+
+heights = c(2, 0.7)
+
+allmc<- ggplot(allcandei, aes(x=log10NI, y=-log10(fisher.test.P), color=sig)) + geom_point(size=4) + geom_text_repel(aes(label=interesting_genes), color="grey40",size=4) + peri_theme + labs(title="all candei",x="-log10(Neutrality Index)") + annotate(geom="text", x=0, y=-1.5, label=paste0())
+
+
+p3mc_p<-  ggplot(p3candei, aes(x=fisher.test.P)) + geom_histogram() + peri_theme
+
+p3mc<- ggplot(p3candei, aes(x=log10NI, y=-log10(fisher.test.P), color=sig)) + geom_point(size=4) + geom_text_repel(aes(label=interesting_genes), color="grey40",size=4) + peri_theme + labs(title="population 3 (white-collared) candei",x="-log10(Neutrality Index)")
+
+p4mc_p<- ggplot(p4candei, aes(x=fisher.test.P)) + geom_histogram() + peri_theme
+
+p4mc<- ggplot(p4candei, aes(x=log10NI, y=-log10(fisher.test.P), color=sig)) + geom_point(size=4) + geom_text_repel(aes(label=interesting_genes), color="grey40",size=4) + peri_theme + labs(title="population 4 (yellow-collared) candei",x="-log10(Neutrality Index)")
+
+ggarrange(allmc, p3mc, p4mc, allmc_p, p3mc_p, p4mc_p, ncol=3, nrow=2, heights = c(2, 0.5),common.legend=TRUE)
+```
+
+
+
+Let's replot these with the zero values included as 1 so we get an idea of all the genes with p-values... 
+
+```{r, fig.width=12, fig.height=6}
+allcandei$pN<- ifelse(allcandei$pN==0, 1, as.numeric(allcandei$pN))
+allcandei$pS<- ifelse(allcandei$pS==0, 1, as.numeric(allcandei$pS))
+allcandei$dN<- ifelse(allcandei$dN==0, 1, as.numeric(allcandei$dN))
+allcandei$dS<- ifelse(allcandei$dS==0, 1, as.numeric(allcandei$dS))
+allcandei$NeutralityIndex <- (allcandei$pN/allcandei$dN)/(allcandei$pS/allcandei$dS)
+allcandei$log10NI<- -log10(allcandei$NeutralityIndex)
+allcandei$log10NI<- ifelse(allcandei$log10NI==Inf | allcandei$log10NI==-Inf ,NA,as.numeric(allcandei$log10NI))
+
+p3candei$pN<- ifelse(p3candei$pN==0, 1, as.numeric(p3candei$pN))
+p3candei$pS<- ifelse(p3candei$pS==0, 1, as.numeric(p3candei$pS))
+p3candei$dN<- ifelse(p3candei$dN==0, 1, as.numeric(p3candei$dN))
+p3candei$dS<- ifelse(p3candei$dS==0, 1, as.numeric(p3candei$dS))
+p3candei$NeutralityIndex <- (p3candei$pN/p3candei$dN)/(p3candei$pS/p3candei$dS)
+p3candei$log10NI<- -log10(p3candei$NeutralityIndex)
+p3candei$log10NI<- ifelse(p3candei$log10NI==Inf | p3candei$log10NI==-Inf ,NA,as.numeric(p3candei$log10NI))
+
+p4candei$pN<- ifelse(p4candei$pN==0, 1, as.numeric(p4candei$pN))
+p4candei$pS<- ifelse(p4candei$pS==0, 1, as.numeric(p4candei$pS))
+p4candei$dN<- ifelse(p4candei$dN==0, 1, as.numeric(p4candei$dN))
+p4candei$dS<- ifelse(p4candei$dS==0, 1, as.numeric(p4candei$dS))
+p4candei$NeutralityIndex <- (p4candei$pN/p4candei$dN)/(p4candei$pS/p4candei$dS)
+p4candei$log10NI<- -log10(p4candei$NeutralityIndex)
+p4candei$log10NI<- ifelse(p4candei$log10NI==Inf | p4candei$log10NI==-Inf ,NA,as.numeric(p4candei$log10NI))
+
+
+
+
+allmc_p<-  ggplot(allcandei, aes(x=fisher.test.P)) + geom_histogram() + peri_theme
+
+#heights = c(2, 0.7)
+
+allmc<- ggplot(allcandei, aes(x=log10NI, y=-log10(fisher.test.P), color=sig)) + geom_point(size=4) + geom_text_repel(aes(label=interesting_genes), color="grey40",size=4) + peri_theme + labs(title="all candei",x="-log10(Neutrality Index)") + annotate(geom="text", x=0, y=-1.5, label=paste0())
+
+
+p3mc_p<-  ggplot(p3candei, aes(x=fisher.test.P)) + geom_histogram() + peri_theme
+
+p3mc<- ggplot(p3candei, aes(x=log10NI, y=-log10(fisher.test.P), color=sig)) + geom_point(size=4) + geom_text_repel(aes(label=interesting_genes), color="grey40",size=4) + peri_theme + labs(title="population 3 (white-collared) candei",x="-log10(Neutrality Index)")
+
+p4mc_p<- ggplot(p4candei, aes(x=fisher.test.P)) + geom_histogram() + peri_theme
+
+p4mc<- ggplot(p4candei, aes(x=log10NI, y=-log10(fisher.test.P), color=sig)) + geom_point(size=4) + geom_text_repel(aes(label=interesting_genes), color="grey40",size=4) + peri_theme + labs(title="population 4 (yellow-collared) candei",x="-log10(Neutrality Index)")
+
+ggarrange(allmc, p3mc, p4mc, allmc_p, p3mc_p, p4mc_p, ncol=3, nrow=2, heights = c(2, 0.5),common.legend=TRUE)
+
+```
+
+
+
+
+```{r GO}
+library(rrvgo)
+library(org.Hs.eg.db)
+library(stringr)
+david<- read.table("../../ABSREL/DAVIDGeneOntology/FINAL/Manacus_DAVID_Chart.txt", fill=TRUE, sep="\t", header=T)
+test<- david[grepl("JPH2", david$Genes),]
+test<- david[grepl("membrane", david$Term),]
+
+david_BP<- david[grepl("GOTERM_BP", david$Category),]
+david_CC<- david[grepl("GOTERM_CC", david$Category),]
+david_MF<- david[grepl("GOTERM_MF", david$Category),]
+
+### Biological Process
+david_BP$ID<- word(david_BP$Term, 1, 1, sep="~")
+
+
+simMatrix <- calculateSimMatrix(david_BP$ID,
+                                orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+scores <- setNames(-log10(david_BP$PValue), david_BP$ID)
+reducedTerms <- reduceSimMatrix(simMatrix,
+                                scores,
+                                threshold=0.7,
+                                orgdb="org.Hs.eg.db")
+treemapPlot(reducedTerms)
+### Cellular Component
+david_CC$ID<- word(david_CC$Term, 1, 1, sep="~")
+
+
+simMatrix <- calculateSimMatrix(david_CC$ID,
+                                orgdb="org.Hs.eg.db",
+                                ont="CC",
+                                method="Rel")
+scores <- setNames(-log10(david_CC$PValue), david_CC$ID)
+reducedTerms <- reduceSimMatrix(simMatrix,
+                                scores,
+                                threshold=0.7,
+                                orgdb="org.Hs.eg.db")
+treemapPlot(reducedTerms)
+
+
+### Molecular Function
+david_MF$ID<- word(david_MF$Term, 1, 1, sep="~")
+
+
+simMatrix <- calculateSimMatrix(david_MF$ID,
+                                orgdb="org.Hs.eg.db",
+                                ont="MF",
+                                method="Rel")
+scores <- setNames(-log10(david_MF$PValue), david_MF$ID)
+reducedTerms <- reduceSimMatrix(simMatrix,
+                                scores,
+                                threshold=0.7,
+                                orgdb="org.Hs.eg.db")
+treemapPlot(reducedTerms)
+
+
+
+```
+
+
+```{r PLOTTING ONLY, eval=FALSE, echo=FALSE}
+library(scatterpie)
+
+
+
+peri_theme <- theme(panel.background = element_rect(fill="white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                    axis.title.x = element_text(size = 16), axis.text.x = element_text(size = 12, 
+                                                                                       colour = "black"), axis.title.y = element_text(size = 16), 
+                    axis.text.y = element_text(size = 12, colour = "black"), 
+                    legend.text = element_text(size = 12), legend.title = element_text(size = 16), 
+                    axis.line.y = element_line(colour = "black"), axis.line.x = element_line(colour = "black"),
+                    plot.title = element_text(hjust = 0.5, size=12))  + theme(legend.key=element_blank())
+
+### read in the GO information for plotting
+
+categories<- read.xlsx("../../ABSREL/SelectionTestingSummary_InclManacus.xlsx")
+
+categories<- categories[,c(1,15,17:26)]
+categories$sensory<-  ifelse(categories$auditory==TRUE | categories$visual==TRUE | categories$taste==TRUE, TRUE, FALSE)
+categories<- categories[categories$digestion==TRUE | categories$sensory==TRUE | categories$telomere==TRUE | categories$muscle==TRUE | categories$sperm==TRUE, ]
+categories$sensory<- as.integer(categories$sensory)
+categories$muscle<- as.integer(categories$muscle)
+categories$sperm<- as.integer(categories$sperm)
+categories$digestion<- as.integer(categories$digestion)
+categories$telomere<- as.integer(categories$telomere)
+categories$total<- apply(categories[,c("sperm", "digestion", "muscle", "sensory", "telomere")], 1,sum)
+categories<- plyr::rename(categories, replace=c("Manacus_Entrez"="Entrez_id"))
+
+allcandei2<- merge(categories[c(2,4,11,5,13,7,6,14)], allcandei, by="Entrez_id", all.y=TRUE)
+allcandei2<- allcandei2[!duplicated(allcandei2$Entrez_id),]
+
+
+
+#label the genes
+interesting<- c("SI", "BCO1", "TAS1R3","SCN4A", "RYR3", "CTC1", "POT1", "TERF2", "JPH2", "ITPR3", "GNL3")
+allcandei2$interesting_genes<- ifelse(allcandei2$best_anno.x %in% interesting, as.character(allcandei2$best_anno.x), "")
+
+fn_colors<- c("#361f4d","#6d1950","#bd4545", "#d48849","#f0d171")
+#fn_colors<- c("#6d1950","#bd4545", "#d48849","#f0d171")
+
+allcandei2$logP<- -log10(allcandei2$fisher.test.P)
+allcandei2<- allcandei2[allcandei2$log10NI>0,]
+allcandei2$sig<- ifelse(allcandei2$fisher.test.P<0.05, "yes","no")
+allcandei2$log10NI2<- allcandei2$log10NI*2
+
+
+##### Candidate Genes ####
+#these are genes that somehow through the gene description we found it to be relevant to one of our synthetic GO categories, OR 
+# OR they were added through Maude's process for the sensory genes
+#this also includes any GO information from the above categories spreadsheet. 
+
+candidates<- read.xlsx("../../ABSREL/GO_synthetic_categories.xlsx", sheet = 2)
+candidates<- candidates[!is.na(candidates$Total),]
+
+#replace the category information for these genes
+for(i in candidates$Gene){
+  sub<- candidates[candidates$Gene==i,]
+  allcandei2$sperm[allcandei2$pfil_gene == i] <- sub$sperm
+  allcandei2$telomere[allcandei2$pfil_gene == i] <- sub$telomere
+  allcandei2$muscle[allcandei2$pfil_gene == i] <- sub$muscle
+  allcandei2$digestion[allcandei2$pfil_gene == i] <- sub$digestion
+  allcandei2$sensory[allcandei2$pfil_gene == i] <- sub$sensory
+#does not replace total column.
+  }
+
+##### Plotting ####
+#colours based on functional categories in the order they appear in the absrel object
+
+original_palette<- c(digestion="#361f4d",muscle="#6d1950",sensory="#bd4545", telomere="#d48849",sperm="#f0d171")
+palette1<- c(digestion="#73204B",muscle="#B02C5A",sensory="#EA7271", telomere="#F7BF67",sperm="#FDF1B0")
+palette1.1<- c(digestion="#361F4D",muscle="#B02C5A",sensory="#EA7271", telomere="#F7BF67",sperm="#FDF1B0")
+palette1.2<- c(digestion="#3D2877",muscle="#B02C5A",sensory="#EA7271", telomere="#F7BF67",sperm="#FDF1B0")
+
+palette3<- c(sensory="#662E9B", digestion="#43BCCD", muscle="#EA3546", telomere="#F86624", sperm="#F9C80E")
+
+fn_colors<- palette3
+
+
+
+
+p<- ggplot(allcandei2, aes(x=log10NI2, y=logP, color=sig)) + geom_point(size=4) + scale_color_manual(values=c("grey80","grey60"), guide=FALSE) + geom_text_repel(aes(label=interesting_genes), color="grey20",size=5.5, box.padding = 1, point.padding=0.35) + peri_theme
+p<- p +  geom_scatterpie(data=allcandei2[!is.na(allcandei2$total) & allcandei2$sig=="yes" | allcandei2$interesting_genes=="SI",], aes(x=log10NI2, y=logP,group=best_anno.x), cols=colnames(allcandei2[,3:7]), color="grey20", pie_scale = 1.7) + coord_fixed() + scale_fill_manual(values=fn_colors, name="")
+p<- p + scale_x_continuous(breaks=c(0,1,2,3,4), labels=c(0,0.5,1,1.5,2)) + scale_y_continuous(breaks=c(0,1,2,3,4), labels=c(0,1,2,3,4), limits=c(0,4))
+p<- p + ylab(expression(paste("-lo",g[10],"P", sep=""))) + xlab((expression(paste("-lo",g[10],"(Neutrality Index)", sep=""))))
+#p<- p + theme(legend.position = c(0.15, 0.85),legend.background=element_rect(fill=alpha("white",0)))
+p
+
+
+ggsave(filename="Manacus_HalfVolcano.pdf",  plot=p, device=cairo_pdf, width=22, height=12, units="cm")
+
+
+
+
+####palette testing#### 
+palettes<- list(original_palette=original_palette, palette1=palette1, palette1.1=palette1.1, palette1.2=palette1.2, palette3=palette3)
+plots<- list()
+for(i in 1:length(palettes)){
+fn_colors<- palettes[[i]]
+p<- ggplot(allcandei2, aes(x=log10NI2, y=logP, color=sig)) + geom_point(size=4) + scale_color_manual(values=c("grey80","grey60"), guide=FALSE) + geom_text_repel(aes(label=interesting_genes), color="grey20",size=5.5, box.padding = 1, point.padding=0.35) + peri_theme
+p<- p +  geom_scatterpie(data=allcandei2[!is.na(allcandei2$total) & allcandei2$sig=="yes" | allcandei2$interesting_genes=="SI",], aes(x=log10NI2, y=logP,group=best_anno.x), cols=colnames(allcandei2[,3:7]), color="grey20", pie_scale = 1.7) + coord_fixed() + scale_fill_manual(values=fn_colors, name="")
+p<- p + scale_x_continuous(breaks=c(0,1,2,3,4), labels=c(0,0.5,1,1.5,2)) + scale_y_continuous(breaks=c(0,1,2,3,4), labels=c(0,1,2,3,4), limits=c(0,4))
+p<- p + ylab(expression(paste("-lo",g[10],"P", sep=""))) + xlab((expression(paste("-lo",g[10],"(Neutrality Index)", sep=""))))
+p<- p + labs(title=names(palettes)[i])
+plots[[i]]<- p
+
+}
+
+g<- ggarrange(plotlist=plots, ncol=1, nrow=5)
+ggsave(filename="Manacus_HalfVolcano_palettes.pdf",  plot=g, device=cairo_pdf, width=15, height=60, units="cm")
+
+
+
+### remove sperm from the list ####
+absrel3<- allcandei2
+absrel3$sperm<- NULL
+absrel3$sensory<- ifelse(absrel3$sensory>0 , 1, 0)
+absrel3$digestion<- ifelse(absrel3$digestion>0 , 1, 0)
+absrel3$muscle<- ifelse(absrel3$muscle>0 , 1, 0)
+absrel3$telomere<- ifelse(absrel3$telomere>0 , 1, 0)
+
+absrel3$total<- apply(absrel3[,c("digestion", "muscle", "sensory", "telomere")], 1,sum)
+
+absrel3$digestion<- absrel3$digestion/absrel3$total
+absrel3$telomere<- absrel3$telomere/absrel3$total
+absrel3$muscle<- absrel3$muscle/absrel3$total
+absrel3$sensory<- absrel3$sensory/absrel3$total
+
+palette4<- c(sensory="#662E9B", digestion="#43BCCD", muscle="#EA3546", telomere="#F9C80E")
+
+fn_colors<- palette4
+
+
+p<- ggplot(absrel3, aes(x=log10NI2, y=logP, color=sig)) + geom_point(size=4) + scale_color_manual(values=c("grey80","grey60"), guide=FALSE) + geom_text_repel(aes(label=interesting_genes), color="grey20",size=5.5, box.padding = 1, point.padding=0.35) + peri_theme
+p<- p +  geom_scatterpie(data=absrel3[!is.na(absrel3$total) & absrel3$sig=="yes" | absrel3$interesting_genes=="SI",], aes(x=log10NI2, y=logP,group=best_anno.x), cols=colnames(absrel3[,3:6]), color="grey20", pie_scale = 1.7) + coord_fixed() + scale_fill_manual(values=fn_colors, name="")
+p<- p + scale_x_continuous(breaks=c(0,1,2,3,4), labels=c(0,0.5,1,1.5,2)) + scale_y_continuous(breaks=c(0,1,2,3,4), labels=c(0,1,2,3,4), limits=c(0,4))
+p<- p + ylab(expression(paste("-lo",g[10],"P", sep=""))) + xlab((expression(paste("-lo",g[10],"(Neutrality Index)", sep=""))))
+#p<- p + theme(legend.position = c(0.15, 0.85),legend.background=element_rect(fill=alpha("white",0)))
+p
+ggsave(filename="Manacus_HalfVolcano_nosperm.pdf",  plot=p, device=cairo_pdf, width=22, height=12, units="cm")
+
+
+```
+
